@@ -193,6 +193,128 @@ function lcsMatches(target, typed) {
   return matched;
 }
 
+// Like lcsMatches, but returns for each index in `a` the matched index in `b` (or -1).
+// Returns null when the inputs are too long to compare quickly.
+function lcsPairs(a, b) {
+  const n = a.length, m = b.length;
+  if (n * m > 4e6) return null;
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const pairs = new Int32Array(n).fill(-1);
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { pairs[i] = j; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return pairs;
+}
+
+/* ---------- Verses ----------
+ * A Bible passage is stored one verse per line, each line starting with its number:
+ * "16 For God so loved…\n17 For God did not send…". Text without numbers is shown as is. */
+
+const VERSE_LINE = /^(\d{1,3}(?::\d{1,3})?)\s+(\S.*)$/;
+const SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+const squash = (s) => s.replace(/\s+/g, " ").trim();
+const linesOf = (text) => text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+const hasNumberedLines = (text) => linesOf(text).filter((l) => VERSE_LINE.test(l)).length >= 2;
+
+// Returns [{ num, text }]; num is null for a line without a verse number.
+function versesOf(item) {
+  return linesOf(item.text).map((line) => {
+    const m = item.translation && line.match(VERSE_LINE);
+    return m ? { num: m[1], text: m[2] } : { num: null, text: line };
+  });
+}
+
+// The words to memorize, without verse numbers.
+const plainText = (item) => versesOf(item).map((v) => v.text).join("\n");
+const versesToText = (verses) => verses.map((v) => (v.num ? `${v.num} ${v.text}` : v.text)).join("\n");
+const vnumHtml = (v) => (v.num ? `<sup class="vnum">${esc(v.num)}</sup>` : "");
+const lineHtml = (v, inner) => `<span class="vline">${vnumHtml(v)}${inner}</span>`;
+const previewHtml = (item) => versesOf(item).map((v) => vnumHtml(v) + esc(v.text)).join(" ");
+
+// Finds verse numbers inside pasted text ("16 For God… 17 For God…", "[16]", "¹⁶", "16For").
+// Returns [{ num, text }] when at least two numbered verses are found, otherwise null.
+function splitInlineNumbers(text) {
+  const clean = text
+    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (s) => ` ${[...s].map((c) => SUPERSCRIPT_DIGITS.indexOf(c)).join("")} `)
+    .replace(/[\[(](\d{1,3}(?::\d{1,3})?)[\])]/g, " $1 ")
+    .replace(/(^|\s)(\d{1,3})(?=\p{Lu})/gu, "$1$2 ");
+  const verses = [];
+  let current = { num: null, words: [] }, last = null;
+  for (const t of clean.split(/\s+/).filter(Boolean)) {
+    const m = t.match(/^(?:(\d{1,3}):)?(\d{1,3})$/);
+    const n = m && Number(m[2]);
+    // A number counts as a verse number when it continues the sequence (or starts a chapter).
+    if (m && (last === null || n === last + 1 || n === 1 || m[1])) {
+      if (current.words.length) verses.push(current);
+      current = { num: m[0], words: [] };
+      last = n;
+    } else {
+      current.words.push(t);
+    }
+  }
+  if (current.words.length) verses.push(current);
+  if (verses.filter((v) => v.num).length < 2) return null;
+  return verses.map((v) => ({ num: v.num, text: v.words.join(" ") }));
+}
+
+// Splits text with no verse numbers by matching it word by word against `refVerses`
+// (the same passage fetched from the ESV or another translation).
+function alignToVerses(text, refVerses) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const pasted = words.map(normalize);
+  const ref = [], starts = [];
+  refVerses.forEach((v) => { starts.push(ref.length); ref.push(...wordsOf(v.text)); });
+  const pairs = lcsPairs(ref, pasted);
+  if (!pairs) return null;
+  const matched = pairs.filter((p) => p >= 0).length;
+  if (matched < 0.4 * Math.min(ref.length, pasted.length)) return null;
+
+  // Where each verse starts in the pasted words: line it up with the nearest matched word.
+  const cuts = starts.map((s, k) => {
+    if (k === 0) return 0;
+    let next = s; while (next < ref.length && pairs[next] < 0) next++;
+    let prev = s - 1; while (prev >= 0 && pairs[prev] < 0) prev--;
+    const lo = prev >= 0 ? pairs[prev] + 1 : 0;
+    const hi = next < ref.length ? pairs[next] : words.length;
+    const guess = Math.max(lo, Math.min(hi, next < ref.length ? pairs[next] - (next - s) : lo + (s - 1 - prev)));
+    // Where translations differ, prefer breaking right after a sentence or clause ends.
+    let best = guess;
+    for (let c = lo; c <= hi && c < words.length; c++) {
+      if (c > 0 && /[.;:!?]["'”’)]*$/.test(words[c - 1]) && (best === guess || Math.abs(c - guess) < Math.abs(best - guess))) best = c;
+    }
+    return best;
+  });
+  const verses = [];
+  cuts.forEach((c, k) => {
+    const end = k + 1 < cuts.length ? Math.max(c, cuts[k + 1]) : words.length;
+    const chunk = words.slice(c, end).join(" ");
+    if (chunk) verses.push({ num: refVerses[k].num, text: chunk });
+  });
+  return verses.length >= 2 ? verses : null;
+}
+
+// Puts each verse of a passage on its own numbered line.
+// Returns { text, count, how } on success, or { note } explaining why not.
+async function splitIntoVerses(text, ref, translation) {
+  if (hasNumberedLines(text)) return { note: "Each verse is already on its own line." };
+  const inline = splitInlineNumbers(text);
+  if (inline) return { text: versesToText(inline), count: inline.length, how: "numbers" };
+  if (!ref) return { note: "Type the reference above first, so the verses can be matched." };
+  // Use the ESV to find the verse breaks; without an ESV key, the WEB works nearly as well.
+  const source = translation === "ESV" && !state.settings.esvKey ? "WEB" : translation;
+  const found = await lookupVerse(ref, source);
+  if (found.verses.length < 2) return { note: `${esc(found.ref)} is a single verse.` };
+  const verses = alignToVerses(text, found.verses);
+  if (!verses) return { note: `Couldn't match this text to ${esc(found.ref)}.` };
+  return { text: versesToText(verses), count: verses.length, how: source };
+}
+
 /* ---------- UI helpers ---------- */
 
 const app = document.getElementById("app");
@@ -324,7 +446,7 @@ function renderLists() {
             <span class="card-ref">${refLabel(i)}</span>
             ${statusBadge(i)}
           </div>
-          <div class="card-text">${esc(i.text)}</div>
+          <div class="card-text">${previewHtml(i)}</div>
           ${i.tags.length ? `<div class="tags">${i.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
         </a>`).join("")
     : `<div class="empty">${q ? "No matches." : `No verses yet.<br><a href="#/add">Add one</a>`}</div>`;
@@ -422,7 +544,7 @@ const TRANSLATIONS = [
 ];
 const ESV_NOTICE = "Scripture quotations marked “ESV” are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, a publishing ministry of Good News Publishers. Used by permission. All rights reserved.";
 
-// Returns { ref, text } or throws an Error with a message fit to show the user.
+// Returns { ref, verses, text } or throws an Error with a message fit to show the user.
 async function lookupVerse(ref, translation) {
   if (translation === "ESV") {
     const key = state.settings.esvKey;
@@ -430,8 +552,8 @@ async function lookupVerse(ref, translation) {
     const params = new URLSearchParams({
       q: ref,
       "include-passage-references": "false",
-      "include-verse-numbers": "false",
-      "include-first-verse-numbers": "false",
+      "include-verse-numbers": "true",
+      "include-first-verse-numbers": "true",
       "include-footnotes": "false",
       "include-footnote-body": "false",
       "include-headings": "false",
@@ -449,9 +571,9 @@ async function lookupVerse(ref, translation) {
     if (res.status === 401 || res.status === 403) throw new Error("The ESV API rejected your key. Check it in Settings.");
     if (!res.ok) throw new Error(`The ESV API returned an error (${res.status}).`);
     const data = await res.json();
-    const text = (data.passages || []).join(" ").replace(/\s+/g, " ").trim();
-    if (!text) throw new Error(`Couldn't find “${ref}”. Try a format like John 3:16.`);
-    return { ref: data.canonical || ref, text };
+    const verses = parseEsvVerses((data.passages || []).join(" "));
+    if (!verses.length) throw new Error(`Couldn't find “${ref}”. Try a format like John 3:16.`);
+    return passage(data.canonical || ref, verses);
   }
 
   let res;
@@ -463,8 +585,28 @@ async function lookupVerse(ref, translation) {
   if (res.status === 404) throw new Error(`Couldn't find “${ref}”. Try a format like John 3:16.`);
   if (!res.ok) throw new Error(`The lookup service returned an error (${res.status}).`);
   const data = await res.json();
-  return { ref: data.reference || ref, text: (data.text || "").replace(/\s+/g, " ").trim() };
+  const list = data.verses || [];
+  const chapters = new Set(list.map((v) => v.chapter));
+  const verses = list
+    .map((v) => ({ num: chapters.size > 1 ? `${v.chapter}:${v.verse}` : String(v.verse), text: squash(v.text || "") }))
+    .filter((v) => v.text);
+  if (!verses.length) verses.push({ num: null, text: squash(data.text || "") });
+  return passage(data.reference || ref, verses);
 }
+
+// ESV text with verse numbers looks like "[16] For God so loved… [17] For God did not…".
+function parseEsvVerses(raw) {
+  const parts = raw.split(/\[(\d+(?::\d+)?)\]/);
+  const verses = squash(parts[0]) ? [{ num: null, text: squash(parts[0]) }] : [];
+  for (let i = 1; i < parts.length; i += 2) {
+    const text = squash(parts[i + 1] || "");
+    if (text) verses.push({ num: parts[i], text });
+  }
+  return verses;
+}
+
+// A single verse is stored without its number; a passage gets one numbered line per verse.
+const passage = (ref, verses) => ({ ref, verses, text: verses.length > 1 ? versesToText(verses) : verses[0].text });
 
 const refLabel = (item) =>
   esc(item.ref) + (item.translation ? ` <span class="translation">${esc(item.translation)}</span>` : "");
@@ -493,6 +635,10 @@ function renderForm(item) {
 
       <label for="text">Text</label>
       <textarea id="text" required placeholder="Look it up above, or paste or type the passage…">${esc(item ? item.text : "")}</textarea>
+      <div class="row text-tools">
+        <button class="btn btn-sm btn-ghost" type="button" id="split">Split into verses</button>
+        <p class="lookup-msg" id="text-msg" hidden></p>
+      </div>
 
       <label for="tags">Tags <span class="hint">— optional, comma separated</span></label>
       <input type="text" id="tags" placeholder="e.g. faith, anxiety" value="${esc(item ? item.tags.join(", ") : "")}" />
@@ -507,14 +653,20 @@ function renderForm(item) {
   `;
 
   const refInput = $("#ref"), select = $("#translation"), lookupBtn = $("#lookup"), msg = $("#lookup-msg");
+  const textArea = $("#text"), splitBtn = $("#split"), textMsg = $("#text-msg");
   refInput.focus();
 
+  const textNote = (html, isError) => {
+    textMsg.innerHTML = html;
+    textMsg.classList.toggle("error", Boolean(isError));
+    textMsg.hidden = !html;
+  };
   const showMsg = (html, isError) => {
     msg.innerHTML = html;
     msg.classList.toggle("error", Boolean(isError));
     msg.hidden = !html;
   };
-  const syncLookup = () => { lookupBtn.hidden = !select.value; showMsg(""); };
+  const syncLookup = () => { lookupBtn.hidden = splitBtn.hidden = !select.value; showMsg(""); textNote(""); };
   select.addEventListener("change", syncLookup);
   syncLookup();
 
@@ -543,10 +695,42 @@ function renderForm(item) {
     if (e.key === "Enter" && select.value && !$("#text").value.trim()) { e.preventDefault(); doLookup(); }
   });
 
-  $("#form").addEventListener("submit", (e) => {
+  // Put each verse on its own line. Runs on paste, on the button, and before saving.
+  // `manual` shows why it couldn't; `timeoutMs` keeps saving from waiting on a slow network.
+  async function trySplit(manual, timeoutMs) {
+    const before = textArea.value, ref = refInput.value.trim();
+    if (!select.value || !before.trim()) return;
+    if (manual) { splitBtn.disabled = true; splitBtn.textContent = "Splitting…"; }
+    try {
+      const work = splitIntoVerses(before, ref, select.value);
+      const result = await (timeoutMs ? Promise.race([work, new Promise((r) => setTimeout(() => r(null), timeoutMs))]) : work);
+      if (!result || textArea.value !== before) return; // timed out, or they kept typing
+      if (result.text) {
+        textArea.value = result.text;
+        textNote(result.how === "numbers"
+          ? `Split into ${result.count} verses.`
+          : `Split into ${result.count} verses by matching ${esc(ref)} in the ${esc(result.how)}.`);
+      } else if (manual) {
+        textNote(result.note);
+      }
+    } catch (err) {
+      if (manual) textNote(err.message === "NO_KEY" ? "Add your ESV API key in Settings." : esc(err.message), true);
+    } finally {
+      if (manual) { splitBtn.disabled = false; splitBtn.textContent = "Split into verses"; }
+    }
+  }
+  splitBtn.addEventListener("click", () => trySplit(true));
+  textArea.addEventListener("paste", () => setTimeout(() => trySplit(false), 0));
+
+  $("#form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const submitBtn = $("button[type=submit]");
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true;
+    await trySplit(false, 5000);
+    submitBtn.disabled = false;
     const ref = refInput.value.trim();
-    const text = $("#text").value.trim();
+    const text = textArea.value.trim();
     const tags = $("#tags").value.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
     const translation = select.value;
     if (!ref || !text) return;
@@ -731,7 +915,7 @@ function renderStage() {
 // `wordState(index)` returns "show" | "hide" | "first".
 function verseHtml(wordState, extraClass) {
   let wi = -1;
-  return tokenize(session.item.text).map((t) => {
+  return versesOf(session.item).map((v) => lineHtml(v, tokenize(v.text).map((t) => {
     if (t.space) return t.space;
     wi++;
     const revealed = session.revealed.has(wi);
@@ -744,7 +928,7 @@ function verseHtml(wordState, extraClass) {
     const hiddenLen = st === "first" ? t.core.length - 1 : t.core.length;
     const blank = hiddenLen > 0 ? `<span class="blank" style="width:${Math.max(0.6, hiddenLen * 0.55)}em"></span>` : "";
     return `<span class="w" data-i="${wi}" data-hidden>${esc(t.pre)}${head}${blank}${esc(t.post)}</span>`;
-  }).join("");
+  }).join(""))).join("");
 }
 
 function bindPeek(stage) {
@@ -766,12 +950,12 @@ function stageRecall(stage) {
     $("#show", stage).addEventListener("click", () => { session.shown = true; renderStage(); });
     return;
   }
-  stage.innerHTML = `<p class="verse">${esc(session.item.text)}</p>
+  stage.innerHTML = `<p class="verse">${versesOf(session.item).map((v) => lineHtml(v, esc(v.text))).join("")}</p>
     <p class="mode-help" style="margin-top:14px">Check yourself, then rate below.</p>`;
 }
 
 function stageFade(stage) {
-  const count = tokenize(session.item.text).filter((t) => !t.space).length;
+  const count = tokenize(plainText(session.item)).filter((t) => !t.space).length;
   const order = seededShuffle([...Array(count).keys()], hashString(session.item.id));
   const hidden = new Set(order.slice(0, Math.round((session.fadeLevel / 10) * count)));
 
@@ -800,7 +984,7 @@ function stageLetters(stage) {
 }
 
 function stageType(stage) {
-  const target = wordsOf(session.item.text);
+  const target = wordsOf(plainText(session.item));
   const c = session.checked;
 
   stage.innerHTML = `
@@ -835,7 +1019,7 @@ function stageType(stage) {
 
 function stageScramble(stage) {
   if (!session.scramble) {
-    const words = session.item.text.split(/\s+/).filter(Boolean);
+    const words = plainText(session.item).split(/\s+/).filter(Boolean);
     const size = words.length <= 12 ? 2 : words.length <= 30 ? 3 : 4;
     const chunks = [];
     for (let i = 0; i < words.length; i += size) chunks.push(words.slice(i, i + size).join(" "));
@@ -905,7 +1089,7 @@ function renderDone(count) {
 function speak() {
   if (!("speechSynthesis" in window)) return toast("Speech isn't supported in this browser.");
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(`${session.item.ref}. ${session.item.text}`);
+  const u = new SpeechSynthesisUtterance(`${session.item.ref}. ${squash(plainText(session.item))}`);
   u.rate = 0.9;
   speechSynthesis.speak(u);
 }

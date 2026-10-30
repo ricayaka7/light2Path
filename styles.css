@@ -457,3 +457,18 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
   z-index: 20;
   max-width: calc(100% - 32px);
 }
+
+/* One verse per line, with a small verse number. */
+.vline { display: block; }
+.vline + .vline { margin-top: 0.3em; }
+.vnum {
+  font: 600 0.58em var(--sans);
+  color: var(--muted);
+  vertical-align: 0.55em;
+  line-height: 0;
+  margin-right: 0.3em;
+  user-select: none;
+}
+.card-text .vnum { margin-left: 0.2em; }
+.text-tools { margin-top: 6px; align-items: center; gap: 10px; flex-wrap: wrap; }
+.text-tools .lookup-msg { margin: 0; }
