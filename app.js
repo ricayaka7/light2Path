@@ -223,9 +223,14 @@ const linesOf = (text) => text.split(/\n+/).map((l) => l.trim()).filter(Boolean)
 const hasNumberedLines = (text) => linesOf(text).filter((l) => VERSE_LINE.test(l)).length >= 2;
 
 // Returns [{ num, text }]; num is null for a line without a verse number.
+// Numbers count on a passage of numbered lines, or on a single verse like "16 For God…",
+// but not on text that just starts with a number, like "12 men were chosen".
 function versesOf(item) {
-  return linesOf(item.text).map((line) => {
-    const m = item.translation && line.match(VERSE_LINE);
+  const lines = linesOf(item.text);
+  const numbered = hasNumberedLines(item.text)
+    || (item.translation && lines.length === 1 && /^\d{1,3}(?::\d{1,3})?\s+\p{Lu}/u.test(lines[0]));
+  return lines.map((line) => {
+    const m = numbered && line.match(VERSE_LINE);
     return m ? { num: m[1], text: m[2] } : { num: null, text: line };
   });
 }
@@ -245,26 +250,116 @@ function splitInlineNumbers(text) {
     .replace(/[\[(](\d{1,3}(?::\d{1,3})?)[\])]/g, " $1 ")
     .replace(/(^|\s)(\d{1,3})(?=\p{Lu})/gu, "$1$2 ");
   const verses = [];
-  let current = { num: null, words: [] }, last = null;
-  for (const t of clean.split(/\s+/).filter(Boolean)) {
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  let current = { num: null, words: [] }, last = null, chapter = null;
+  tokens.forEach((t, i) => {
     const m = t.match(/^(?:(\d{1,3}):)?(\d{1,3})$/);
-    const n = m && Number(m[2]);
-    // A number counts as a verse number when it continues the sequence (or starts a chapter).
-    if (m && (last === null || n === last + 1 || n === 1 || m[1])) {
+    if (!m) { current.words.push(t); return; }
+    const n = Number(m[2]), c = m[1] ? Number(m[1]) : null;
+    // Bible sites often open a chapter with its number: "3 Now there was… 2 This man…".
+    const afterChapterNumber = !c && n === 2 && last > 2 && !verses.length && current.num && current.words.length >= 3;
+    // The first number has to open the text or follow punctuation, so "took 5 loaves" doesn't count.
+    const isFirst = last === null && (!current.words.length || /[.;:,!?"”’)]$/.test(current.words[current.words.length - 1]));
+    // After that, numbers have to continue the sequence or start a new chapter.
+    const continues = last !== null && (c === null
+      ? n === last + 1 || (n === 1 && last > 1 && tokens.slice(i + 1).includes("2"))
+      : chapter === null ? n === 1 || n === last + 1 : (c === chapter && n === last + 1) || (c === chapter + 1 && n === 1));
+    if (afterChapterNumber) current.num = "1";
+    if (isFirst || continues || afterChapterNumber) {
       if (current.words.length) verses.push(current);
       current = { num: m[0], words: [] };
       last = n;
+      if (c) chapter = c;
     } else {
       current.words.push(t);
     }
-  }
+  });
   if (current.words.length) verses.push(current);
   if (verses.filter((v) => v.num).length < 2) return null;
+  // Some sites leave the number off the first verse: it's the one before the next verse.
+  const next = !verses[0].num && verses[1].num.match(/^(?:(\d+):)?(\d+)$/);
+  if (next && next[2] > 1) verses[0].num = (next[1] ? `${next[1]}:` : "") + (next[2] - 1);
   return verses.map((v) => ({ num: v.num, text: v.words.join(" ") }));
+}
+
+// Book names and common abbreviations, for finding a reference in pasted text.
+const NUMBERED_BOOKS = "Samuel|Sam|Kings|Kgs|Chronicles|Chron|Chr|Corinthians|Cor|Thessalonians|Thess|Timothy|Tim|Peter|Pet|John|Jn";
+const BOOKS = "Genesis|Gen|Exodus|Exod|Ex|Leviticus|Lev|Numbers|Num|Deuteronomy|Deut|Joshua|Josh|Judges|Judg|Ruth|Ezra|Nehemiah|Neh|Esther|Esth|Job|Psalms|Psalm|Psa|Ps|Proverbs|Prov|Ecclesiastes|Eccl|Song of Solomon|Song of Songs|Isaiah|Isa|Jeremiah|Jer|Lamentations|Lam|Ezekiel|Ezek|Daniel|Dan|Hosea|Hos|Joel|Amos|Obadiah|Obad|Jonah|Micah|Mic|Nahum|Nah|Habakkuk|Hab|Zephaniah|Zeph|Haggai|Hag|Zechariah|Zech|Malachi|Mal|Matthew|Matt|Mt|Mark|Mk|Luke|Lk|John|Jn|Acts|Romans|Rom|Galatians|Gal|Ephesians|Eph|Philippians|Phil|Colossians|Col|Titus|Philemon|Philem|Hebrews|Heb|James|Jas|Jude|Revelation|Rev";
+const REFERENCE = `\\b(?:[1-3] ?(?:${NUMBERED_BOOKS})|${BOOKS})\\.? +\\d{1,3}(?::\\d{1,3})?(?: ?[-–—] ?(?:\\d{1,3}:)?\\d{1,3})?`;
+const NOTICE_SIGNAL = /©|\(c\)\s*\d{4}|\bcopyright\s+(?:\(c\)|\d{4})|all rights reserved|used by permission|[®™]|^\s*scripture\s+(?:quotations?|taken|quoted)\b.*\b(?:from|marked)\b/i;
+const NOTICE_START = /scripture\s+(?:quotations?|taken|quoted)\b|(?:the\s+)?holy bible\b|copyright\b|©|\(c\)\s*\d{4}|all rights reserved|used by permission/i;
+const MARKED_NOTICE = /[^.!?]*[®™]/;
+const PASTED_URL = /(?:https?:\/\/|www\.)\S+|\b(?:bible|biblegateway)\.com\S*/gi;
+
+// Pulls the version and reference out of a pasted passage, along with copyright notices and links.
+// A version only counts in brackets, next to a reference, alone on a line, or in a notice,
+// and a reference only at the start or end of the paste, alone on a line, or next to a version,
+// so words in the verse itself aren't mistaken for them.
+// Returns { text, translation, ref }; the last two are null when not found.
+function extractPasteInfo(pasted) {
+  const names = TRANSLATIONS.filter((v) => v.name).map((v) => v.name).sort((a, b) => b.length - a.length).join("|");
+  const ids = TRANSLATIONS.filter((v) => v.id).map((v) => v.id).join("|");
+  const VERSION = `\\b(?:${names}|(?:${ids})(?:\\d{2,4})?)\\b`;
+  const original = pasted.replace(/\r\n?/g, "\n");
+  const REMOVED = "\0"; // marks what was taken out, so only separators next to it get cleaned up
+  const tidy = (s) => s.replace(/[ \t\-–—~|·]*\0[ \t\-–—~|·:,]*/g, " ");
+  let translation = null, ref = null;
+  const take = (r, v) => {
+    if (r && !ref) ref = r;
+    if (v && !translation) translation = (TRANSLATIONS.find((x) => x.name === v) || { id: v.replace(/\d+$/, "") }).id;
+    return REMOVED;
+  };
+
+  let notices = "";
+  let t = original.split("\n").map((line) => {
+    if (!NOTICE_SIGNAL.test(line)) return line;
+    const start = line.search(NOTICE_START);
+    const cut = start >= 0 ? start : line.search(MARKED_NOTICE);
+    if (cut < 0) return line;
+    notices += line.slice(cut) + " ";
+    return line.slice(0, cut) + REMOVED;
+  }).join("\n").replace(PASTED_URL, REMOVED);
+  t = tidy(t);
+
+  // Next to each other: "John 3:16 (NIV)", "NIV John 3:16".
+  const between = "[ \\t,:;|·\\-–—(\\[]*";
+  t = t.replace(new RegExp(`[(\\[]?(${REFERENCE})${between}(${VERSION})[)\\]]?`), (_, r, v) => take(r, v));
+  if (!ref) t = t.replace(new RegExp(`[(\\[]?(${VERSION})${between}(${REFERENCE})[)\\]]?`), (_, v, r) => take(r, v));
+  // In brackets, then alone on a line.
+  t = t.replace(new RegExp(`[(\\[] ?(${VERSION}) ?[)\\]]`, "g"), (_, v) => take(null, v));
+  t = tidy(t);
+  const wrap = "[\\s\\-–—~:;,.|·()\\[\\]\"'“”‘’]*";
+  const aloneVersion = new RegExp(`^${wrap}(${VERSION})${wrap}$`);
+  const aloneRef = new RegExp(`^${wrap}(${REFERENCE})${wrap}$`);
+  t = t.split("\n").filter((l) => {
+    const v = l.match(aloneVersion), r = l.match(aloneRef);
+    if (v) take(null, v[1]);
+    if (r) take(r[1], null);
+    return !v && !r;
+  }).join("\n");
+  // At the start or end of the paste, leaving any quote marks and final punctuation of the verse.
+  if (!ref) t = t.replace(new RegExp(`^[\\s\\-–—~:;,.|·)\\]]*(${REFERENCE})[\\s\\-–—~:;,.|·)\\]]*`), (_, r) => take(r, null));
+  if (!ref) t = t.replace(new RegExp(`[\\s\\-–—~:|·(\\[]*(${REFERENCE})${wrap}$`), (_, r) => take(r, null));
+
+  if (!translation) {
+    const named = notices.match(new RegExp(VERSION));
+    if (named) take(null, named[0]);
+  }
+  if (t === original) return { text: pasted, translation: null, ref: null };
+
+  t = tidy(t).split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
+  const quoted = t.match(/^["“]([^"“”]*)["”]$/);
+  return {
+    text: quoted ? quoted[1].trim() : t,
+    translation,
+    ref: ref && ref.replace(/ ?[-–—] ?/, "-"),
+  };
 }
 
 // Splits text with no verse numbers by matching it word by word against `refVerses`
 // (the same passage fetched from the ESV or another translation).
+const COMMON_WORDS = new Set("a an and are as at be but by for from he her him his i in is it me my not of on or our she so that the their them they this to was we were who will with you your".split(" "));
+
 function alignToVerses(text, refVerses) {
   const words = text.split(/\s+/).filter(Boolean);
   const pasted = words.map(normalize);
@@ -272,8 +367,10 @@ function alignToVerses(text, refVerses) {
   refVerses.forEach((v) => { starts.push(ref.length); ref.push(...wordsOf(v.text)); });
   const pairs = lcsPairs(ref, pasted);
   if (!pairs) return null;
-  const matched = pairs.filter((p) => p >= 0).length;
-  if (matched < 0.4 * Math.min(ref.length, pasted.length)) return null;
+  // Common words match almost anything, so only the meaningful ones decide if this is the same passage.
+  const meaningful = ref.map((w, i) => i).filter((i) => !COMMON_WORDS.has(ref[i]));
+  const matched = meaningful.filter((i) => pairs[i] >= 0).length;
+  if (matched < 0.4 * meaningful.length) return null;
 
   // Where each verse starts in the pasted words: line it up with the nearest matched word.
   const cuts = starts.map((s, k) => {
@@ -284,11 +381,11 @@ function alignToVerses(text, refVerses) {
     const hi = next < ref.length ? pairs[next] : words.length;
     const guess = Math.max(lo, Math.min(hi, next < ref.length ? pairs[next] - (next - s) : lo + (s - 1 - prev)));
     // Where translations differ, prefer breaking right after a sentence or clause ends.
-    let best = guess;
+    let best = null;
     for (let c = lo; c <= hi && c < words.length; c++) {
-      if (c > 0 && /[.;:!?]["'”’)]*$/.test(words[c - 1]) && (best === guess || Math.abs(c - guess) < Math.abs(best - guess))) best = c;
+      if (c > 0 && /[.;:!?]["'”’)]*$/.test(words[c - 1]) && (best === null || Math.abs(c - guess) < Math.abs(best - guess))) best = c;
     }
-    return best;
+    return best === null ? guess : best;
   });
   const verses = [];
   cuts.forEach((c, k) => {
@@ -307,7 +404,8 @@ async function splitIntoVerses(text, ref, translation) {
   if (inline) return { text: versesToText(inline), count: inline.length, how: "numbers" };
   if (!ref) return { note: "Type the reference above first, so the verses can be matched." };
   // Use the ESV to find the verse breaks; without an ESV key, the WEB works nearly as well.
-  const source = translation === "ESV" && !state.settings.esvKey ? "WEB" : translation;
+  const wanted = canLookup(translation) ? translation : "ESV";
+  const source = wanted === "ESV" && !state.settings.esvKey ? "WEB" : wanted;
   const found = await lookupVerse(ref, source);
   if (found.verses.length < 2) return { note: `${esc(found.ref)} is a single verse.` };
   const verses = alignToVerses(text, found.verses);
@@ -398,6 +496,7 @@ function renderHome() {
         Import backup <input type="file" id="import" accept="application/json" hidden />
       </label>
     </div>
+    ${empty ? "" : `<p class="notice">Backups are for your own use. They may contain copyrighted translations, so please don't share them.</p>`}
   `;
 
   bindSearch(app);
@@ -537,11 +636,22 @@ function importData(e) {
 /* ---------- Verse lookup ---------- */
 
 const TRANSLATIONS = [
-  { id: "ESV", label: "ESV" },
-  { id: "KJV", label: "KJV" },
-  { id: "WEB", label: "WEB (World English Bible)" },
+  { id: "ESV", label: "ESV", name: "English Standard Version" },
+  { id: "KJV", label: "KJV", name: "King James Version" },
+  { id: "WEB", label: "WEB (World English Bible)", name: "World English Bible" },
+  // These can be pasted and labelled, but not looked up.
+  { id: "NIV", label: "NIV", name: "New International Version", lookup: false },
+  { id: "NASB", label: "NASB", name: "New American Standard Bible", lookup: false },
+  { id: "NKJV", label: "NKJV", name: "New King James Version", lookup: false },
+  { id: "NLT", label: "NLT", name: "New Living Translation", lookup: false },
+  { id: "CSB", label: "CSB", name: "Christian Standard Bible", lookup: false },
+  { id: "RSV", label: "RSV", name: "Revised Standard Version", lookup: false },
+  { id: "NRSV", label: "NRSV", name: "New Revised Standard Version", lookup: false },
+  { id: "AMP", label: "AMP", name: "Amplified Bible", lookup: false },
+  { id: "MSG", label: "MSG (The Message)", name: "The Message", lookup: false },
   { id: "", label: "None — a quote or my own text" },
 ];
+const canLookup = (id) => TRANSLATIONS.some((t) => t.id && t.id === id && t.lookup !== false);
 const ESV_NOTICE = "Scripture quotations marked “ESV” are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, a publishing ministry of Good News Publishers. Used by permission. All rights reserved.";
 
 // Returns { ref, verses, text } or throws an Error with a message fit to show the user.
@@ -639,6 +749,7 @@ function renderForm(item) {
         <button class="btn btn-sm btn-ghost" type="button" id="split">Split into verses</button>
         <p class="lookup-msg" id="text-msg" hidden></p>
       </div>
+      <p class="notice">Pasted text stays on your device. You're responsible for how you use copyrighted translations.</p>
 
       <label for="tags">Tags <span class="hint">— optional, comma separated</span></label>
       <input type="text" id="tags" placeholder="e.g. faith, anxiety" value="${esc(item ? item.tags.join(", ") : "")}" />
@@ -666,7 +777,8 @@ function renderForm(item) {
     msg.classList.toggle("error", Boolean(isError));
     msg.hidden = !html;
   };
-  const syncLookup = () => { lookupBtn.hidden = splitBtn.hidden = !select.value; showMsg(""); textNote(""); };
+  const syncButtons = () => { lookupBtn.hidden = !canLookup(select.value); splitBtn.hidden = !select.value; };
+  const syncLookup = () => { syncButtons(); showMsg(""); textNote(""); };
   select.addEventListener("change", syncLookup);
   syncLookup();
 
@@ -692,43 +804,55 @@ function renderForm(item) {
   lookupBtn.addEventListener("click", doLookup);
   // Enter in the reference field looks it up when there's no text yet.
   refInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && select.value && !$("#text").value.trim()) { e.preventDefault(); doLookup(); }
+    if (e.key === "Enter" && canLookup(select.value) && !$("#text").value.trim()) { e.preventDefault(); doLookup(); }
   });
 
-  // Put each verse on its own line. Runs on paste, on the button, and before saving.
-  // `manual` shows why it couldn't; `timeoutMs` keeps saving from waiting on a slow network.
-  async function trySplit(manual, timeoutMs) {
+  // Moves a version and reference found in the text into their own fields.
+  // Returns a sentence saying what was found, or "".
+  function applyPasteInfo() {
+    const info = extractPasteInfo(textArea.value);
+    const fillRef = info.ref && !refInput.value.trim();
+    textArea.value = info.text;
+    if (info.translation) { select.value = info.translation; syncButtons(); }
+    if (fillRef) refInput.value = info.ref;
+    const found = [fillRef && info.ref, info.translation && (fillRef ? `(${info.translation})` : info.translation)].filter(Boolean).join(" ");
+    return found ? `Found ${esc(found)}. ` : "";
+  }
+
+  // Put each verse on its own line. Runs on paste, on the button, and when the reference changes.
+  // `manual` shows why it couldn't, and is the only way a reference that doesn't look biblical gets looked up.
+  async function trySplit(manual, found = "") {
     const before = textArea.value, ref = refInput.value.trim();
     if (!select.value || !before.trim()) return;
+    const usableRef = manual || new RegExp(`^${REFERENCE}`, "i").test(ref) ? ref : "";
     if (manual) { splitBtn.disabled = true; splitBtn.textContent = "Splitting…"; }
     try {
-      const work = splitIntoVerses(before, ref, select.value);
-      const result = await (timeoutMs ? Promise.race([work, new Promise((r) => setTimeout(() => r(null), timeoutMs))]) : work);
-      if (!result || textArea.value !== before) return; // timed out, or they kept typing
+      const result = await splitIntoVerses(before, usableRef, select.value);
+      if (textArea.value !== before) return; // they kept typing
       if (result.text) {
         textArea.value = result.text;
-        textNote(result.how === "numbers"
+        textNote(found + (result.how === "numbers"
           ? `Split into ${result.count} verses.`
-          : `Split into ${result.count} verses by matching ${esc(ref)} in the ${esc(result.how)}.`);
+          : `Split into ${result.count} verses by matching ${esc(ref)} in the ${esc(result.how)}.`));
       } else if (manual) {
-        textNote(result.note);
+        textNote(found + result.note);
       }
     } catch (err) {
-      if (manual) textNote(err.message === "NO_KEY" ? "Add your ESV API key in Settings." : esc(err.message), true);
+      if (manual) textNote(found + (err.message === "NO_KEY" ? "Add your ESV API key in Settings." : esc(err.message)), true);
     } finally {
       if (manual) { splitBtn.disabled = false; splitBtn.textContent = "Split into verses"; }
     }
   }
   splitBtn.addEventListener("click", () => trySplit(true));
-  textArea.addEventListener("paste", () => setTimeout(() => trySplit(false), 0));
+  textArea.addEventListener("paste", () => setTimeout(() => {
+    const found = applyPasteInfo();
+    if (found) textNote(found);
+    trySplit(false, found);
+  }, 0));
+  refInput.addEventListener("change", () => trySplit(false));
 
-  $("#form").addEventListener("submit", async (e) => {
+  $("#form").addEventListener("submit", (e) => {
     e.preventDefault();
-    const submitBtn = $("button[type=submit]");
-    if (submitBtn.disabled) return;
-    submitBtn.disabled = true;
-    await trySplit(false, 5000);
-    submitBtn.disabled = false;
     const ref = refInput.value.trim();
     const text = textArea.value.trim();
     const tags = $("#tags").value.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
@@ -775,7 +899,7 @@ function renderSettings() {
 
     <label for="default-translation">Default translation</label>
     <select id="default-translation">
-      ${TRANSLATIONS.map((t) => `<option value="${t.id}" ${t.id === s.translation ? "selected" : ""}>${t.label}</option>`).join("")}
+      ${TRANSLATIONS.filter((t) => t.lookup !== false).map((t) => `<option value="${t.id}" ${t.id === s.translation ? "selected" : ""}>${t.label}</option>`).join("")}
     </select>
 
     <section class="settings-card">
@@ -917,11 +1041,12 @@ function verseHtml(wordState, extraClass) {
   let wi = -1;
   return versesOf(session.item).map((v) => lineHtml(v, tokenize(v.text).map((t) => {
     if (t.space) return t.space;
+    if (!t.core) return esc(t.pre + t.post); // a lone dash isn't a word to practice
     wi++;
     const revealed = session.revealed.has(wi);
     const st = revealed ? "show" : wordState(wi);
     const cls = extraClass ? extraClass(wi) : "";
-    if (st === "show" || !t.core) {
+    if (st === "show") {
       return `<span class="w ${revealed ? "peek" : ""} ${cls}" data-i="${wi}">${esc(t.pre + t.core + t.post)}</span>`;
     }
     const head = st === "first" ? esc(t.core[0]) : "";
@@ -955,7 +1080,7 @@ function stageRecall(stage) {
 }
 
 function stageFade(stage) {
-  const count = tokenize(plainText(session.item)).filter((t) => !t.space).length;
+  const count = tokenize(plainText(session.item)).filter((t) => t.core).length;
   const order = seededShuffle([...Array(count).keys()], hashString(session.item.id));
   const hidden = new Set(order.slice(0, Math.round((session.fadeLevel / 10) * count)));
 
