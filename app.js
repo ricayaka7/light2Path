@@ -328,6 +328,8 @@ function extractPasteInfo(pasted) {
   const between = "[ \\t,:;|·\\-–—(\\[]*";
   t = t.replace(new RegExp(`[(\\[]?(${REFERENCE})${between}(${VERSION})[)\\]]?`, "i"), (_, r, v) => take(r, v));
   if (!ref) t = t.replace(new RegExp(`[(\\[]?(${VERSION})${between}(${REFERENCE})[)\\]]?`, "i"), (_, v, r) => take(r, v));
+  // A version not in the list still counts in brackets with a reference: "(Psalm 1:1-6 XYZ)".
+  if (!ref) t = t.replace(new RegExp(`[(\\[](${REFERENCE})[ ,]+([A-Z][A-Za-z]{1,5})\\d{0,4}[)\\]]`), (_, r, v) => take(r, v));
   // In brackets, then alone on a line.
   t = t.replace(new RegExp(`[(\\[] ?(${VERSION}) ?[)\\]]`, "g"), (_, v) => take(null, v));
   t = tidy(t);
@@ -646,6 +648,8 @@ const TRANSLATIONS = [
   { id: "ESV", label: "ESV", name: "English Standard Version" },
   { id: "KJV", label: "KJV", name: "King James Version" },
   { id: "WEB", label: "WEB (World English Bible)", name: "World English Bible" },
+  { id: "ASV", label: "ASV", name: "American Standard Version" },
+  { id: "YLT", label: "YLT (Young's Literal)", name: "Young's Literal Translation" },
   // These can be pasted and labelled, but not looked up.
   { id: "NIV", label: "NIV", name: "New International Version", lookup: false },
   { id: "NASB", label: "NASB", name: "New American Standard Bible", lookup: false },
@@ -656,6 +660,19 @@ const TRANSLATIONS = [
   { id: "NRSV", label: "NRSV", name: "New Revised Standard Version", lookup: false },
   { id: "AMP", label: "AMP", name: "Amplified Bible", lookup: false },
   { id: "MSG", label: "MSG (The Message)", name: "The Message", lookup: false },
+  { id: "LSB", label: "LSB", name: "Legacy Standard Bible", lookup: false },
+  { id: "NET", label: "NET", name: "New English Translation", lookup: false },
+  { id: "HCSB", label: "HCSB", name: "Holman Christian Standard Bible", lookup: false },
+  { id: "NIRV", label: "NIrV", name: "New International Reader's Version", lookup: false },
+  { id: "NABRE", label: "NABRE", name: "New American Bible", lookup: false },
+  { id: "CEB", label: "CEB", name: "Common English Bible", lookup: false },
+  { id: "CEV", label: "CEV", name: "Contemporary English Version", lookup: false },
+  { id: "GNT", label: "GNT (Good News)", name: "Good News Translation", lookup: false },
+  { id: "NCV", label: "NCV", name: "New Century Version", lookup: false },
+  { id: "TLB", label: "TLB (Living Bible)", name: "The Living Bible", lookup: false },
+  { id: "TPT", label: "TPT", name: "The Passion Translation", lookup: false },
+  { id: "BSB", label: "BSB", name: "Berean Standard Bible", lookup: false },
+  { id: "LEB", label: "LEB", name: "Lexham English Bible", lookup: false },
   { id: "", label: "None — a quote or my own text" },
 ];
 const canLookup = (id) => TRANSLATIONS.some((t) => t.id && t.id === id && t.lookup !== false);
@@ -849,6 +866,7 @@ function renderForm(item, draft) {
       <div class="row lookup-row">
         <select id="translation">
           ${TRANSLATIONS.map((t) => `<option value="${t.id}" ${t.id === current ? "selected" : ""}>${t.label}</option>`).join("")}
+          ${TRANSLATIONS.some((t) => t.id === current) ? "" : `<option value="${esc(current)}" selected>${esc(current)}</option>`}
         </select>
         <button class="btn" type="button" id="lookup">Look up</button>
       </div>
