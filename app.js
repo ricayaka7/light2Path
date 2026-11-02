@@ -306,7 +306,10 @@ function extractPasteInfo(pasted) {
   let translation = null, ref = null;
   const take = (r, v) => {
     if (r && !ref) ref = r;
-    if (v && !translation) translation = (TRANSLATIONS.find((x) => x.name === v) || { id: v.replace(/\d+$/, "") }).id;
+    if (v && !translation) {
+      const named = TRANSLATIONS.find((x) => x.name && x.name.toLowerCase() === v.toLowerCase());
+      translation = named ? named.id : v.toUpperCase().replace(/\d+$/, "");
+    }
     return REMOVED;
   };
 
@@ -321,16 +324,16 @@ function extractPasteInfo(pasted) {
   }).join("\n").replace(PASTED_URL, REMOVED);
   t = tidy(t);
 
-  // Next to each other: "John 3:16 (NIV)", "NIV John 3:16".
+  // Next to each other: "John 3:16 (NIV)", "NIV John 3:16". Typed references may be in any case.
   const between = "[ \\t,:;|·\\-–—(\\[]*";
-  t = t.replace(new RegExp(`[(\\[]?(${REFERENCE})${between}(${VERSION})[)\\]]?`), (_, r, v) => take(r, v));
-  if (!ref) t = t.replace(new RegExp(`[(\\[]?(${VERSION})${between}(${REFERENCE})[)\\]]?`), (_, v, r) => take(r, v));
+  t = t.replace(new RegExp(`[(\\[]?(${REFERENCE})${between}(${VERSION})[)\\]]?`, "i"), (_, r, v) => take(r, v));
+  if (!ref) t = t.replace(new RegExp(`[(\\[]?(${VERSION})${between}(${REFERENCE})[)\\]]?`, "i"), (_, v, r) => take(r, v));
   // In brackets, then alone on a line.
   t = t.replace(new RegExp(`[(\\[] ?(${VERSION}) ?[)\\]]`, "g"), (_, v) => take(null, v));
   t = tidy(t);
   const wrap = "[\\s\\-–—~:;,.|·()\\[\\]\"'“”‘’]*";
-  const aloneVersion = new RegExp(`^${wrap}(${VERSION})${wrap}$`);
-  const aloneRef = new RegExp(`^${wrap}(${REFERENCE})${wrap}$`);
+  const aloneVersion = new RegExp(`^${wrap}(${VERSION})${wrap}$`, "i");
+  const aloneRef = new RegExp(`^${wrap}(${REFERENCE})${wrap}$`, "i");
   t = t.split("\n").filter((l) => {
     const v = l.match(aloneVersion), r = l.match(aloneRef);
     if (v) take(null, v[1]);
@@ -338,8 +341,12 @@ function extractPasteInfo(pasted) {
     return !v && !r;
   }).join("\n");
   // At the start or end of the paste, leaving any quote marks and final punctuation of the verse.
-  if (!ref) t = t.replace(new RegExp(`^[\\s\\-–—~:;,.|·)\\]]*(${REFERENCE})[\\s\\-–—~:;,.|·)\\]]*`), (_, r) => take(r, null));
-  if (!ref) t = t.replace(new RegExp(`[\\s\\-–—~:|·(\\[]*(${REFERENCE})${wrap}$`), (_, r) => take(r, null));
+  if (!ref) t = t.replace(new RegExp(`^[\\s\\-–—~:;,.|·)\\]]*(${REFERENCE})[\\s\\-–—~:;,.|·)\\]]*`, "i"), (_, r) => take(r, null));
+  if (!ref) t = t.replace(new RegExp(`[\\s\\-–—~:|·(\\[]*(${REFERENCE})${wrap}$`, "i"), (_, r) => take(r, null));
+  // With a reference found, a version also counts at the start or end: "John 3:16 For God… ESV".
+  // Here it has to be in capitals or spelled out, so a verse ending in "the web" keeps it.
+  if (ref && !translation) t = t.replace(new RegExp(`[\\s\\-–—~:;,|·(\\[]+(${VERSION})[)\\]]?[\\s.]*$`), (_, v) => take(null, v));
+  if (ref && !translation) t = t.replace(new RegExp(`^[\\s(\\[]*(${VERSION})[)\\]]?[\\s\\-–—~:;,|·]+`), (_, v) => take(null, v));
 
   if (!translation) {
     const named = notices.match(new RegExp(VERSION));
@@ -352,7 +359,7 @@ function extractPasteInfo(pasted) {
   return {
     text: quoted ? quoted[1].trim() : t,
     translation,
-    ref: ref && ref.replace(/ ?[-–—] ?/, "-"),
+    ref: ref && ref.replace(/ ?[-–—] ?/, "-").replace(/^(\d ?)?\p{Ll}/u, (m) => m.toUpperCase()),
   };
 }
 
