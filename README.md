@@ -35,7 +35,8 @@ ESV text is © Crossway. The free API key is for **non-commercial use** and requ
 
 ## How it works
 
-- **My verses:** a sidebar on wide screens, and the home screen on phones. Type a reference, tap **Look up**, and the text fills in. You can also paste any quote.
+- **My verses:** a sidebar on wide screens, and the home screen on phones.
+- **Adding:** tap **+ Add** and type a reference (`John 3:16`, `Psalm 23 KJV`) or paste a verse or quote into the one box, then tap **Continue**. The app looks up the text or picks the reference and version out of the paste, then shows the full form so you can check it. Anything it couldn't find, like a quote's source or text for a version it can't look up, is marked for you to fill in before you add it.
 - **One verse per line:** passages are saved with each verse on its own numbered line. When you paste a passage, the app splits it automatically: it uses verse numbers in the paste if there are any (`16`, `[16]`, `¹⁶`), and otherwise matches the words against the passage from the ESV (or the WEB if you have no ESV key). This works even when you paste another translation. **Split into verses** under the text does the same for verses you already saved. Verse numbers aren't part of practice.
 - **Version and reference in a paste:** if the pasted text names its version or reference (`John 3:16-17 NIV`, `(NKJV)`), they move into their own fields, and copyright lines and links are removed. A reference you already typed is kept. NIV, NASB, NKJV, NLT, CSB, RSV, NRSV, AMP and MSG can be pasted and labelled but not looked up.
 - **Practice modes:**

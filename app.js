@@ -444,7 +444,7 @@ window.addEventListener("keydown", onKey);
 function render() {
   const [, view, id] = location.hash.slice(1).split("/");
   window.scrollTo(0, 0);
-  if (view === "add") return renderForm(null);
+  if (view === "add") return renderQuickAdd();
   if (view === "edit") return renderForm(findItem(id));
   if (view === "practice" && findItem(id)) return startPractice(findItem(id), false);
   if (view === "review") return startReview();
@@ -721,20 +721,124 @@ const passage = (ref, verses) => ({ ref, verses, text: verses.length > 1 ? verse
 const refLabel = (item) =>
   esc(item.ref) + (item.translation ? ` <span class="translation">${esc(item.translation)}</span>` : "");
 
+/* ---------- Add: one box first ---------- */
+
+// The add screen starts with a single box. Whatever goes in it is searched,
+// then the full form opens with what was found filled in and what's missing marked.
+function renderQuickAdd(input = "") {
+  session = null;
+  renderSidebar(null);
+  app.innerHTML = `
+    <h1>Add a verse or quote</h1>
+    <form id="quick">
+      <label for="entry">Reference, verse or quote</label>
+      <textarea id="entry" class="entry" required placeholder="Type a reference like John 3:16 or Psalm 23 NIV, or paste a verse or quote…">${esc(input)}</textarea>
+      <div class="row form-actions">
+        <button class="btn btn-primary" type="submit" id="go">Continue</button>
+        <a class="btn btn-ghost" href="#/">Cancel</a>
+      </div>
+    </form>
+  `;
+  const entry = $("#entry"), go = $("#go");
+  entry.focus();
+  // Enter continues when a reference was typed; pasted passages keep their line breaks.
+  entry.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && (e.metaKey || e.ctrlKey || REF_ENTRY.test(entry.value.trim()))) {
+      e.preventDefault();
+      $("#quick").requestSubmit();
+    }
+  });
+  $("#quick").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const value = entry.value.trim();
+    if (!value) return;
+    go.disabled = true;
+    go.textContent = "Searching…";
+    const draft = await identifyEntry(value);
+    if (location.hash === "#/add") renderForm(null, draft);
+  });
+}
+
+// A typed reference with an optional version: "john 3:16", "Psalm 23 (NIV)".
+const REF_ENTRY = new RegExp(`^(${REFERENCE})\\s*[(\\[]?\\s*([a-z]{2,5}\\d{0,4})?\\s*[)\\]]?$`, "i");
+const versionId = (word) => {
+  const id = word && word.toUpperCase().replace(/\d+$/, "");
+  return TRANSLATIONS.some((t) => t.id && t.id === id) ? id : null;
+};
+
+// Works out what was entered and fills in what it can.
+// Returns { input, ref, text, translation, notes, missing, checkTranslation }.
+async function identifyEntry(input) {
+  const draft = { input, ref: "", text: "", translation: null, notes: [], missing: [], checkTranslation: false };
+  const typedRef = input.match(REF_ENTRY);
+  if (typedRef && (!typedRef[2] || versionId(typedRef[2]))) {
+    draft.ref = typedRef[1].replace(/ ?[-–—] ?/, "-").replace(/^(\d ?)?\p{Ll}/u, (m) => m.toUpperCase());
+    draft.translation = versionId(typedRef[2]);
+  } else {
+    const info = extractPasteInfo(input);
+    Object.assign(draft, { text: info.text.trim(), ref: info.ref || "", translation: info.translation });
+  }
+
+  // No version given: a reference means scripture in the usual translation; otherwise it may be any quote.
+  if (!draft.translation) {
+    draft.translation = draft.ref ? state.settings.translation : "";
+    draft.checkTranslation = Boolean(draft.ref && draft.text);
+  }
+
+  if (draft.ref && !draft.text) {
+    if (canLookup(draft.translation)) {
+      try {
+        const found = await lookupVerse(draft.ref, draft.translation);
+        Object.assign(draft, { ref: found.ref, text: found.text });
+        draft.notes.push(`Found ${esc(found.ref)} in the ${esc(draft.translation)}.`);
+      } catch (e) {
+        draft.notes.push(e.message === "NO_KEY"
+          ? `To look up the ESV, add your free API key in <a href="#/settings">Settings</a>, or pick KJV or WEB below and tap Look up.`
+          : esc(e.message));
+        draft.error = true;
+      }
+    } else {
+      draft.notes.push(`The ${esc(draft.translation)} can't be looked up. Paste the text below.`);
+    }
+  } else if (draft.text) {
+    const stated = !draft.checkTranslation && draft.translation;
+    const found = [draft.ref, stated && `(${draft.translation})`].filter(Boolean).join(" ");
+    if (found) draft.notes.push(`Found ${esc(found)} in what you entered.`);
+    if (draft.ref && draft.translation) {
+      try {
+        const split = await splitIntoVerses(draft.text, draft.ref, draft.translation);
+        if (split.text) {
+          draft.text = split.text;
+          draft.notes.push(`Split into ${split.count} verses.`);
+        }
+      } catch (e) { /* leave the text as entered */ }
+    }
+  }
+
+  if (!draft.ref) draft.missing.push("ref");
+  if (!draft.text) draft.missing.push("text");
+  return draft;
+}
+
 /* ---------- Add / edit ---------- */
 
-function renderForm(item) {
+// `draft` comes from the one-box add screen: fields to fill in, notes, and what's still missing.
+function renderForm(item, draft) {
   session = null;
   renderSidebar(item ? item.id : null);
-  const current = item ? item.translation || "" : state.settings.translation;
+  const current = item ? item.translation || "" : draft ? draft.translation : state.settings.translation;
+  const missing = (field) => Boolean(draft && draft.missing.includes(field));
+  const ask = (field, words) => (missing(field) ? ` <span class="hint ask">— ${words}</span>` : "");
 
   app.innerHTML = `
-    <h1>${item ? "Edit" : "Add a verse or quote"}</h1>
+    <h1>${item ? "Edit" : draft ? "Check and add" : "Add a verse or quote"}</h1>
+    ${draft ? `<p class="lookup-msg draft-msg ${draft.error ? "error" : ""}">${draft.notes.join(" ") || "Check the details below."}
+      ${draft.missing.length ? ` Please fill in what's marked.` : ""}</p>` : ""}
     <form id="form">
-      <label for="ref">Reference or source</label>
-      <input type="text" id="ref" required autocomplete="off" placeholder="e.g. Romans 8:28 or C.S. Lewis" value="${esc(item ? item.ref : "")}" />
+      <label for="ref">Reference or source${ask("ref", "please add")}</label>
+      <input type="text" id="ref" required autocomplete="off" placeholder="e.g. Romans 8:28 or C.S. Lewis" class="${missing("ref") ? "missing" : ""}" value="${esc(item ? item.ref : draft ? draft.ref : "")}" />
 
-      <label for="translation">Translation</label>
+      <label for="translation">Translation${draft && draft.checkTranslation ? ` <span class="hint ask">— not stated, please check</span>` : ""}</label>
       <div class="row lookup-row">
         <select id="translation">
           ${TRANSLATIONS.map((t) => `<option value="${t.id}" ${t.id === current ? "selected" : ""}>${t.label}</option>`).join("")}
@@ -743,8 +847,8 @@ function renderForm(item) {
       </div>
       <p class="lookup-msg" id="lookup-msg" hidden></p>
 
-      <label for="text">Text</label>
-      <textarea id="text" required placeholder="Look it up above, or paste or type the passage…">${esc(item ? item.text : "")}</textarea>
+      <label for="text">Text${ask("text", "please paste or look it up")}</label>
+      <textarea id="text" required placeholder="Look it up above, or paste or type the passage…" class="${missing("text") ? "missing" : ""}">${esc(item ? item.text : draft ? draft.text : "")}</textarea>
       <div class="row text-tools">
         <button class="btn btn-sm btn-ghost" type="button" id="split">Split into verses</button>
         <p class="lookup-msg" id="text-msg" hidden></p>
@@ -756,6 +860,7 @@ function renderForm(item) {
 
       <div class="row form-actions">
         <button class="btn btn-primary" type="submit">${item ? "Save changes" : "Add to my verses"}</button>
+        ${draft ? `<button class="btn btn-ghost" type="button" id="back">Back</button>` : ""}
         <a class="btn btn-ghost" href="${item ? `#/practice/${item.id}` : "#/"}">Cancel</a>
         <span class="spacer"></span>
         ${item ? `<button class="btn btn-ghost btn-danger" type="button" id="delete">Delete</button>` : ""}
@@ -765,7 +870,14 @@ function renderForm(item) {
 
   const refInput = $("#ref"), select = $("#translation"), lookupBtn = $("#lookup"), msg = $("#lookup-msg");
   const textArea = $("#text"), splitBtn = $("#split"), textMsg = $("#text-msg");
-  refInput.focus();
+  if (draft) {
+    const first = draft.missing[0] === "ref" ? refInput : draft.missing[0] === "text" ? textArea : $("button[type=submit]");
+    first.focus();
+    $("#back").addEventListener("click", () => renderQuickAdd(draft.input));
+    $$(".missing").forEach((el) => el.addEventListener("input", () => el.classList.toggle("missing", !el.value.trim())));
+  } else {
+    refInput.focus();
+  }
 
   const textNote = (html, isError) => {
     textMsg.innerHTML = html;
@@ -791,6 +903,7 @@ function renderForm(item) {
       const found = await lookupVerse(ref, select.value);
       refInput.value = found.ref;
       $("#text").value = found.text;
+      $("#text").classList.remove("missing");
       showMsg(`Found ${esc(found.ref)} (${esc(select.value)}).`);
     } catch (e) {
       showMsg(e.message === "NO_KEY"
