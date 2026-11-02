@@ -649,7 +649,6 @@ const TRANSLATIONS = [
   { id: "KJV", label: "KJV", name: "King James Version" },
   { id: "WEB", label: "WEB (World English Bible)", name: "World English Bible" },
   { id: "ASV", label: "ASV", name: "American Standard Version" },
-  { id: "YLT", label: "YLT (Young's Literal)", name: "Young's Literal Translation" },
   // These can be pasted and labelled, but not looked up.
   { id: "NIV", label: "NIV", name: "New International Version", lookup: false },
   { id: "NASB", label: "NASB", name: "New American Standard Bible", lookup: false },
@@ -660,6 +659,7 @@ const TRANSLATIONS = [
   { id: "NRSV", label: "NRSV", name: "New Revised Standard Version", lookup: false },
   { id: "AMP", label: "AMP", name: "Amplified Bible", lookup: false },
   { id: "MSG", label: "MSG (The Message)", name: "The Message", lookup: false },
+  { id: "YLT", label: "YLT (Young's Literal)", name: "Young's Literal Translation", lookup: false },
   { id: "LSB", label: "LSB", name: "Legacy Standard Bible", lookup: false },
   { id: "NET", label: "NET", name: "New English Translation", lookup: false },
   { id: "HCSB", label: "HCSB", name: "Holman Christian Standard Bible", lookup: false },
