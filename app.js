@@ -458,6 +458,7 @@ function render() {
   if (view === "practice" && findItem(id)) return startPractice(findItem(id), false);
   if (view === "review") return startReview();
   if (view === "settings") return renderSettings();
+  if (view === "help") return renderHelp();
   renderHome();
 }
 
@@ -1023,6 +1024,70 @@ function renderForm(item, draft) {
       }
     });
   }
+}
+
+/* ---------- Help ---------- */
+
+// The user guide. Update it when a feature changes.
+const HELP = [
+  ["Adding a verse or quote", `
+    <p>Tap <b>+ Add</b> and put what you have into the box, then tap <b>Continue</b>. You can enter:</p>
+    <ul>
+      <li><b>A reference</b>, like <i>John 3:16</i>, <i>Psalm 23</i> or <i>Romans 8:28-30 KJV</i>. The text is looked up for you.</li>
+      <li><b>A pasted verse or passage</b>, with or without its reference and version, like <i>For God so loved the world… (John 3:16 NIV)</i>.</li>
+      <li><b>Any quote</b> or text of your own.</li>
+    </ul>
+    <p>The next screen shows what was found: the reference, the translation and the text. Check them, and fill in anything marked in orange. Tags are optional: use them to group verses, like <i>faith</i> or <i>anxiety</i>. Then tap <b>Add to my verses</b>. <b>Back</b> returns to the box with your entry still in it.</p>`],
+  ["Translations", `
+    <p>ESV, KJV, WEB and ASV can be looked up. The others, like NIV, NASB, NKJV, NLT, CSB or LSB, can be pasted and labelled, but not looked up.</p>
+    <p>If a paste doesn't name its version, the app guesses your default translation and asks you to check it. Change the default in <a href="#/settings">Settings</a>.</p>`],
+  ["Using the ESV", `
+    <p>The ESV needs a free key from Crossway, its publisher:</p>
+    <ol>
+      <li>Sign up at <a href="https://api.esv.org/account/create-application/" target="_blank" rel="noopener">api.esv.org</a> and create a personal, non-commercial application.</li>
+      <li>Copy the API key.</li>
+      <li>Open <a href="#/settings">Settings</a>, paste the key, and tap <b>Test &amp; save</b>.</li>
+    </ol>
+    <p>The key stays on your device. Without it, use KJV, WEB or ASV.</p>`],
+  ["Passages and verse numbers", `
+    <p>A passage is saved with each verse on its own numbered line. When you paste one, the app splits it for you, using the verse numbers in the paste or by matching it against the same passage. If it isn't split, tap <b>Split into verses</b> under the text. Verse numbers aren't part of practice.</p>`],
+  ["Practicing", `
+    <p>Tap a verse to practice it. Choose a mode at the top:</p>
+    <ul>
+      <li><b>Recall:</b> see the reference, say the passage from memory, then reveal it.</li>
+      <li><b>Fade:</b> hide more and more words with the slider. Tap a hidden word to peek.</li>
+      <li><b>First letters:</b> only the first letter of each word is shown.</li>
+      <li><b>Type it:</b> type it from memory and get a word-by-word score.</li>
+      <li><b>Scramble:</b> put the shuffled phrases back in order.</li>
+    </ul>
+    <p>Tap <b>Listen</b> to hear the passage read aloud.</p>`],
+  ["Reviews and rating", `
+    <p>After practicing, rate how well you knew it: <b>Again</b>, <b>Hard</b>, <b>Good</b> or <b>Easy</b>. The app schedules the next review: sooner for verses you found hard, later for ones you know well.</p>
+    <p>The home screen shows how many verses are due. Tap <b>Start review</b> to go through them. A verse counts as <b>Mastered</b> once you know it well enough to wait 3 weeks between reviews. Practice a little every day to keep your streak.</p>`],
+  ["Editing and deleting", `
+    <p>Open a verse and tap <b>Edit</b> to change its reference, translation, text or tags. <b>Delete</b> is on the edit screen. Tap it twice to confirm.</p>`],
+  ["Putting it on your phone", `
+    <ul>
+      <li><b>iPhone:</b> in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>.</li>
+      <li><b>Android:</b> in Chrome, tap <b>Install app</b>, or open the <b>⋮</b> menu and choose <b>Add to Home screen</b>.</li>
+    </ul>
+    <p>The installed app opens full screen and works offline. If you added verses in the browser first, move them with a backup, below.</p>`],
+  ["Backups", `
+    <p>Your verses are saved only on this device, and there's no account. To keep them safe or move them to another device, tap <b>Export backup</b> at the bottom of the home screen. On the other device, tap <b>Import backup</b> and choose the file. Your ESV key isn't included.</p>`],
+  ["Updates", `
+    <p>The version and release month are shown at the bottom of the screen. The app updates itself: if you don't see a new version, close and reopen it once or twice.</p>`],
+];
+
+function renderHelp() {
+  session = null;
+  renderSidebar(null);
+  app.innerHTML = `
+    <h1>How to use light2Path</h1>
+    <p class="muted">Tap a topic to open it.</p>
+    <div class="help">
+      ${HELP.map(([title, body], i) => `<details class="help-item" ${i === 0 ? "open" : ""}><summary>${title}</summary>${body}</details>`).join("")}
+    </div>
+  `;
 }
 
 /* ---------- Settings ---------- */

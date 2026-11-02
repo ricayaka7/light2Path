@@ -330,6 +330,20 @@ textarea { min-height: 160px; resize: vertical; font-family: var(--serif); font-
 input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 
 .form-actions { margin-top: 24px; }
+
+.help { display: grid; gap: 8px; margin-top: 16px; }
+.help-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 16px;
+}
+.help-item summary { cursor: pointer; padding: 14px 0; font-weight: 600; }
+.help-item[open] summary { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.help-item p, .help-item ul, .help-item ol { font-size: 0.95rem; margin: 10px 0; }
+.help-item ul, .help-item ol { padding-left: 20px; }
+.help-item li { margin: 4px 0; }
+.help-item a { color: var(--accent); font-weight: 600; }
 .entry { min-height: 200px; }
 .draft-msg { margin: 0 0 4px; }
 .ask { color: var(--warn); }
