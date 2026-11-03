@@ -29,7 +29,7 @@ let state = load();
 let session = null;     // active practice session; null when not on the practice screen
 let searchQuery = "";
 let installPrompt = null; // deferred beforeinstallprompt event (Android / desktop Chrome)
-const voice = { rec: null, timer: null, run: 0 }; // active recognizer, pause timer, id of the current Listen & repeat run
+const voice = { rec: null, timer: null, run: 0, toastUntil: 0 }; // active recognizer, pause timer, id of the current Listen & repeat run, when the last toast should finish being read
 
 function load() {
   try {
@@ -436,7 +436,11 @@ function toast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg;
   el.hidden = false;
-  if (voiceOn() && !voice.rec) say(msg, { queue: true });
+  if (voiceOn() && !voice.rec) {
+    // Screens change right after most toasts; keep this speech alive through that (see hush).
+    voice.toastUntil = Date.now() + 1500 + msg.length * 70;
+    say(msg, { queue: true });
+  }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), 2600);
 }
@@ -771,18 +775,19 @@ function renderQuickAdd(input = "") {
     </form>
   `;
   const entry = $("#entry"), go = $("#go"), mic = $("#mic");
+  if (!voiceOn() || !mic) entry.focus(); // with Voice help the mic comes first, so don't pop up the keyboard
   if (mic) {
     mic.addEventListener("click", () => {
       if (voice.rec) return voice.rec.stop();
-      speechSynthesis.cancel();
+      hush(true);
       let heard = "";
       const rec = listen({
         onText: (t) => { heard = t; entry.value = t; },
-        onEnd: () => {
+        onEnd: (failed) => {
           if (!entry.isConnected) return;
           mic.classList.remove("on");
           mic.textContent = "🎤 Say a reference";
-          if (!heard) return toast("I didn't hear anything. Try again.");
+          if (!heard) return failed ? undefined : toast("I didn't hear anything. Try again.");
           const ref = spokenRef(heard);
           entry.value = ref;
           if (REF_ENTRY.test(ref)) $("#quick").requestSubmit();
@@ -793,8 +798,6 @@ function renderQuickAdd(input = "") {
       mic.classList.add("on");
       mic.textContent = "⏹ Stop";
     });
-  } else {
-    entry.focus();
   }
   // Enter continues when a reference was typed; pasted passages keep their line breaks.
   entry.addEventListener("keydown", (e) => {
@@ -1228,6 +1231,7 @@ function startReview() {
 }
 
 function startPractice(item, review, progress) {
+  stopVoice(); // a review moves on without a route change, so end the last item's speech and mic here
   renderSidebar(item.id);
   session = {
     item,
@@ -1485,12 +1489,12 @@ function stageSay(stage) {
       <p class="score">${c.score}% — ${c.matched.size} of ${target.length} words</p>
       <p class="verse">${verseHtml(() => "show", (i) => (c.matched.has(i) ? "ok" : "miss"))}</p>` : ""}`;
 
-  const finish = () => {
+  const finish = (failed) => {
     if (session !== s || s.mode !== "say") return;
     s.listening = null;
-    if (!s.heard) toast("I didn't hear anything. Try again.");
+    if (!s.heard) { if (!failed) toast("I didn't hear anything. Try again."); }
     else {
-      s.said = checkWords(digitsToWords(s.heard));
+      s.said = checkWords(matchNumbers(s.heard, target));
       if (voiceOn()) say(`You got ${s.said.matched.size} of ${target.length} words.`);
     }
     renderStage();
@@ -1498,7 +1502,7 @@ function stageSay(stage) {
 
   $("#mic", stage).addEventListener("click", () => {
     if (voice.rec) return voice.rec.stop();
-    speechSynthesis.cancel();
+    hush(true);
     s.heard = "";
     s.said = null;
     s.suggested = null;
@@ -1631,10 +1635,15 @@ const canListen = () => Boolean(Recognition);
 const voiceOn = () => Boolean(state.settings.voiceHelp);
 const applyVoiceClass = () => document.body.classList.toggle("voice-help", voiceOn());
 
+// Cuts off speech, except a toast still being read (unless `force`), which would be lost when the screen changes.
+function hush(force = false) {
+  if ("speechSynthesis" in window && (force || Date.now() > voice.toastUntil)) speechSynthesis.cancel();
+}
+
 // Speaks `text`; resolves when it ends or is cut off. `queue` adds to what is already being said.
 function say(text, { queue = false } = {}) {
   if (!("speechSynthesis" in window) || !text) return Promise.resolve();
-  if (!queue) speechSynthesis.cancel();
+  if (!queue) hush();
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "en-US";
@@ -1657,12 +1666,21 @@ function listen({ continuous = false, onText, onEnd }) {
     for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
     onText(squash(text));
   };
+  let failed = false; // an error was already shown, so onEnd shouldn't also say "didn't hear anything"
+  const problems = {
+    "not-allowed": "Allow the microphone to use voice.",
+    "service-not-allowed": "Allow the microphone to use voice.",
+    "audio-capture": "No microphone found.",
+    network: "Listening needs an internet connection.",
+  };
   rec.onerror = (e) => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") toast("Allow the microphone to use voice.");
+    if (!problems[e.error]) return;
+    failed = true;
+    toast(problems[e.error]);
   };
   rec.onend = () => {
     if (voice.rec === rec) voice.rec = null;
-    onEnd();
+    onEnd(failed);
   };
   try { rec.start(); } catch (e) { return null; }
   voice.rec = rec;
@@ -1673,7 +1691,7 @@ function listen({ continuous = false, onText, onEnd }) {
 function stopVoice() {
   voice.run++;
   clearTimeout(voice.timer);
-  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  hush();
   const rec = voice.rec;
   voice.rec = null;
   if (rec) { try { rec.abort(); } catch (e) { /* already stopped */ } }
@@ -1711,14 +1729,19 @@ function numberWordsToDigits(text) {
   return out.join(" ");
 }
 
-// "40" -> "forty", "23" -> "twenty three": speech-to-text writes digits, verses spell numbers out.
-function digitsToWords(text) {
-  const words = (n) => {
-    if (n < 20) return NUM_UNITS[n];
-    if (n < 100) return NUM_TENS[Math.floor(n / 10)] + (n % 10 ? ` ${NUM_UNITS[n % 10]}` : "");
-    return `${NUM_UNITS[Math.floor(n / 100)]} hundred` + (n % 100 ? ` ${words(n % 100)}` : "");
-  };
-  return text.replace(/\b\d{1,3}\b/g, (d) => words(Number(d)));
+const numToWords = (n) => {
+  if (n < 20) return NUM_UNITS[n];
+  if (n < 100) return NUM_TENS[Math.floor(n / 10)] + (n % 10 ? ` ${NUM_UNITS[n % 10]}` : "");
+  return `${NUM_UNITS[Math.floor(n / 100)]} hundred` + (n % 100 ? ` ${numToWords(n % 100)}` : "");
+};
+
+// Makes spoken numbers match how the passage writes them. Speech-to-text gives digits ("40") while
+// most verses spell numbers out ("forty"); a passage that uses digits gets digits instead.
+function matchNumbers(heard, targetWords) {
+  const digits = new Set(targetWords.filter((w) => /^\d{1,3}$/.test(w)));
+  let out = heard.replace(/\b\d{1,3}\b/g, (d) => (digits.has(d) ? d : numToWords(Number(d))));
+  digits.forEach((d) => { out = out.replace(new RegExp(`\\b${numToWords(Number(d))}\\b`, "gi"), d); });
+  return out;
 }
 
 // Turns what was said into something REF_ENTRY accepts:
@@ -1746,10 +1769,8 @@ function onKey(e) {
   if (["TEXTAREA", "INPUT"].includes(document.activeElement.tagName)) return;
   if (e.key >= "1" && e.key <= "4") { rate(Number(e.key) - 1); return; }
   if (e.key === " " && (session.mode === "say" || session.mode === "repeat") && document.activeElement.tagName !== "BUTTON") {
-    e.preventDefault();
     const btn = $(session.mode === "say" ? "#mic" : "#play");
-    if (btn) btn.click();
-    return;
+    if (btn) { e.preventDefault(); btn.click(); return; }
   }
   if (e.key === " " && session.mode === "recall" && !session.shown) {
     e.preventDefault();
