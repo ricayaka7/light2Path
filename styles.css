@@ -497,3 +497,25 @@ input[type="range"] { flex: 1; accent-color: var(--accent); }
 .card-text .vnum { margin-left: 0.2em; }
 .text-tools { margin-top: 6px; align-items: center; gap: 10px; flex-wrap: wrap; }
 .text-tools .lookup-msg { margin: 0; }
+
+/* ---------- Voice ---------- */
+
+.mic-btn { font-size: 1.05rem; padding: 12px 20px; border-radius: 999px; }
+.mic-btn.on { background: var(--bad); border-color: var(--bad); color: #fff; animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--bad) 22%, transparent); } }
+.say-bar { display: flex; justify-content: center; margin: 8px 0 16px; }
+.heard { min-height: 3em; margin: 0 0 8px; padding: 12px 14px; background: var(--surface-2); border-radius: 12px; color: var(--muted); font-style: italic; }
+
+.phrase { cursor: pointer; border-radius: 4px; padding: 0 2px; }
+.phrase.now { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.hidden-words .phrase { color: transparent; background: var(--blank); user-select: none; }
+.hidden-words .phrase.now { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.repeat-tools { justify-content: center; }
+
+.check { display: flex; align-items: center; gap: 10px; margin: 20px 0 4px; font-size: 1rem; cursor: pointer; }
+.check input { width: 22px; height: 22px; accent-color: var(--accent); }
+.check-note { margin: 0 0 8px; font-size: 0.85rem; }
+
+/* Voice help: bigger targets for the voice controls. */
+.voice-help .mic-btn, .voice-help #speak, .voice-help .repeat-tools .btn { font-size: 1.15rem; min-height: 52px; }
+.voice-help .tab { font-size: 1rem; padding: 12px 16px; }

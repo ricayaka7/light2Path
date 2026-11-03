@@ -45,7 +45,10 @@ ESV text is © Crossway. The free API key is for **non-commercial use** and requ
   - **First letters:** only the first letter of each word is shown.
   - **Type it:** type it from memory and get a word-by-word score.
   - **Scramble:** put the shuffled phrases back in order.
+  - **Say it:** say the passage from memory into the microphone and get a word-by-word score.
+  - **Listen & repeat:** hear the passage one phrase at a time and say each back in the pause.
   - **Listen:** reads the passage aloud.
+- **Voice:** turn on **Voice help** in Settings and the app reads instructions, scores and messages aloud, starts in the voice modes and uses larger buttons. On **+ Add**, tap **Say a reference** to add a verse by speaking it (`first John three sixteen`). Listening uses the browser's speech recognition (Chrome, Edge, Safari; not Firefox), and Chrome and Edge send the audio to their makers.
 - **Spaced repetition:** after practicing, rate yourself *Again / Hard / Good / Easy* (keys 1–4). The app schedules the next review, sooner for hard verses and later for ones you know. A verse counts as *Mastered* once its review interval reaches 21 days.
 
 ## Files

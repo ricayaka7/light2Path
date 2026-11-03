@@ -13,10 +13,12 @@ const MODES = [
   { id: "letters", label: "First letters" },
   { id: "type", label: "Type it" },
   { id: "scramble", label: "Scramble" },
+  { id: "say", label: "Say it", voice: true },
+  { id: "repeat", label: "Listen & repeat", voice: true },
 ];
 const RATINGS = ["Again", "Hard", "Good", "Easy"];
 
-const DEFAULT_SETTINGS = { translation: "ESV", esvKey: "" };
+const DEFAULT_SETTINGS = { translation: "ESV", esvKey: "", voiceHelp: false };
 
 // Early versions seeded these sample verses. Remove any that were never practiced.
 const OLD_SAMPLE_REFS = ["Psalm 119:11", "John 3:16", "Proverbs 3:5-6", "Philippians 4:13", "Marcus Aurelius"];
@@ -27,6 +29,7 @@ let state = load();
 let session = null;     // active practice session; null when not on the practice screen
 let searchQuery = "";
 let installPrompt = null; // deferred beforeinstallprompt event (Android / desktop Chrome)
+const voice = { rec: null, timer: null, run: 0 }; // active recognizer, pause timer, id of the current Listen & repeat run
 
 function load() {
   try {
@@ -433,6 +436,7 @@ function toast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg;
   el.hidden = false;
+  if (voiceOn() && !voice.rec) say(msg, { queue: true });
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.hidden = true), 2600);
 }
@@ -452,6 +456,7 @@ window.addEventListener("keydown", onKey);
 
 function render() {
   const [, view, id] = location.hash.slice(1).split("/");
+  stopVoice();
   window.scrollTo(0, 0);
   if (view === "add") return renderQuickAdd();
   if (view === "edit") return renderForm(findItem(id));
@@ -756,6 +761,7 @@ function renderQuickAdd(input = "") {
   app.innerHTML = `
     <h1>Add a verse or quote</h1>
     <form id="quick">
+      ${canListen() ? `<button type="button" class="btn mic-btn" id="mic">🎤 Say a reference</button>` : ""}
       <label for="entry">Reference, verse or quote</label>
       <textarea id="entry" class="entry" required placeholder="Type a reference like John 3:16 or Psalm 23 NIV, or paste a verse or quote…">${esc(input)}</textarea>
       <div class="row form-actions">
@@ -764,8 +770,32 @@ function renderQuickAdd(input = "") {
       </div>
     </form>
   `;
-  const entry = $("#entry"), go = $("#go");
-  entry.focus();
+  const entry = $("#entry"), go = $("#go"), mic = $("#mic");
+  if (mic) {
+    mic.addEventListener("click", () => {
+      if (voice.rec) return voice.rec.stop();
+      speechSynthesis.cancel();
+      let heard = "";
+      const rec = listen({
+        onText: (t) => { heard = t; entry.value = t; },
+        onEnd: () => {
+          if (!entry.isConnected) return;
+          mic.classList.remove("on");
+          mic.textContent = "🎤 Say a reference";
+          if (!heard) return toast("I didn't hear anything. Try again.");
+          const ref = spokenRef(heard);
+          entry.value = ref;
+          if (REF_ENTRY.test(ref)) $("#quick").requestSubmit();
+          else if (voiceOn()) say(`I heard ${heard}. Tap Continue if that's right.`);
+        },
+      });
+      if (!rec) return toast("Couldn't start the microphone.");
+      mic.classList.add("on");
+      mic.textContent = "⏹ Stop";
+    });
+  } else {
+    entry.focus();
+  }
   // Enter continues when a reference was typed; pasted passages keep their line breaks.
   entry.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && (e.metaKey || e.ctrlKey || REF_ENTRY.test(entry.value.trim()))) {
@@ -854,6 +884,11 @@ function renderForm(item, draft) {
   const current = item ? item.translation || "" : draft ? draft.translation : state.settings.translation;
   const missing = (field) => Boolean(draft && draft.missing.includes(field));
   const ask = (field, words) => (missing(field) ? ` <span class="hint ask">— ${words}</span>` : "");
+  if (draft && voiceOn()) {
+    say(draft.missing.length || draft.checkTranslation
+      ? "Some parts need checking. Look at the orange notes."
+      : `Found ${draft.ref}. ${squash(draft.text).slice(0, 400)} Tap Add to my verses.`);
+  }
 
   app.innerHTML = `
     <h1>${item ? "Edit" : draft ? "Check and add" : "Add a verse or quote"}</h1>
@@ -1059,8 +1094,18 @@ const HELP = [
       <li><b>First letters:</b> only the first letter of each word is shown.</li>
       <li><b>Type it:</b> type it from memory and get a word-by-word score.</li>
       <li><b>Scramble:</b> put the shuffled phrases back in order.</li>
+      <li><b>Say it:</b> tap the microphone and say the passage from memory. You get a word-by-word score.</li>
+      <li><b>Listen &amp; repeat:</b> hear the passage one phrase at a time and say each one back in the pause. Tap <b>Hide words</b> to practice by ear only.</li>
     </ul>
-    <p>Tap <b>Listen</b> to hear the passage read aloud.</p>`],
+    <p>Tap <b>Listen</b> to hear the whole passage read aloud.</p>`],
+  ["Voice", `
+    <p>For anyone who finds reading hard, the app can speak and listen.</p>
+    <ul>
+      <li><b>Voice help:</b> turn it on in <a href="#/settings">Settings</a>. The app then reads instructions, scores and messages aloud, shows the voice modes first, and uses larger buttons. Practice opens in <b>Listen &amp; repeat</b>, and reviews open in <b>Say it</b>.</li>
+      <li><b>Adding by voice:</b> on the <b>+ Add</b> screen, tap <b>Say a reference</b> and say it, like <i>first John three sixteen</i> or <i>Psalm twenty three</i>. You can add the version too, like <i>King James</i>.</li>
+      <li><b>Space bar:</b> starts and stops the microphone in Say it, and plays or pauses in Listen &amp; repeat.</li>
+    </ul>
+    <p>Allow the microphone when your browser asks. Listening works in Chrome, Edge and Safari, but not Firefox. Chrome and Edge send what you say to their makers to turn it into text, so it needs an internet connection. Where listening isn't available, the microphone buttons are hidden and Listen &amp; repeat still works.</p>`],
   ["Reviews and rating", `
     <p>After practicing, rate how well you knew it: <b>Again</b>, <b>Hard</b>, <b>Good</b> or <b>Easy</b>. The app schedules the next review: sooner for verses you found hard, later for ones you know well.</p>
     <p>The home screen shows how many verses are due. Tap <b>Start review</b> to go through them. A verse counts as <b>Mastered</b> once you know it well enough to wait 3 weeks between reviews. Practice a little every day to keep your streak.</p>`],
@@ -1105,6 +1150,9 @@ function renderSettings() {
       ${TRANSLATIONS.filter((t) => t.lookup !== false).map((t) => `<option value="${t.id}" ${t.id === s.translation ? "selected" : ""}>${t.label}</option>`).join("")}
     </select>
 
+    <label class="check"><input type="checkbox" id="voice-help" ${s.voiceHelp ? "checked" : ""} /> Voice help</label>
+    <p class="muted check-note">Reads instructions, scores and messages aloud, and starts practice in the voice modes. Turn this on if reading is hard.</p>
+
     <section class="settings-card">
       <h2>ESV API key</h2>
       <p class="muted">Looking up the ESV needs a free key from Crossway, the ESV's publisher. It's saved only on this device.</p>
@@ -1129,6 +1177,13 @@ function renderSettings() {
     s.translation = e.target.value;
     save();
     toast("Default translation saved.");
+  });
+
+  $("#voice-help").addEventListener("change", (e) => {
+    s.voiceHelp = e.target.checked;
+    save();
+    applyVoiceClass();
+    toast(s.voiceHelp ? "Voice help is on." : "Voice help is off.");
   });
 
   const msg = $("#key-msg");
@@ -1178,7 +1233,14 @@ function startPractice(item, review, progress) {
     item,
     review,
     progress: progress || null,
-    mode: review ? "recall" : (session && session.item === item ? session.mode : "fade"),
+    mode: review
+      ? (voiceOn() ? (canListen() ? "say" : "repeat") : "recall")
+      : (session && session.item === item ? session.mode : voiceOn() ? "repeat" : "fade"),
+    spokenFor: null,       // "itemId:mode" whose instructions were last read aloud (Voice help)
+    heard: "",             // say: transcript so far
+    said: null,            // say: { matched, score }
+    listening: null,       // say: active recognizer
+    repeat: null,          // repeat: { phrases, index, playing, done, hide }
     fadeLevel: 0,
     revealed: new Set(),
     shown: false,          // recall: has the text been revealed
@@ -1205,7 +1267,8 @@ function renderPractice() {
     </div>
 
     <div class="tabs" role="tablist">
-      ${MODES.map((m) => `<button class="tab" role="tab" data-mode="${m.id}" aria-selected="${m.id === session.mode}">${m.label}</button>`).join("")}
+      ${(voiceOn() ? [...MODES.filter((m) => m.voice), ...MODES.filter((m) => !m.voice)] : MODES)
+        .map((m) => `<button class="tab" role="tab" data-mode="${m.id}" aria-selected="${m.id === session.mode}">${m.label}</button>`).join("")}
     </div>
 
     <div class="stage" id="stage"></div>
@@ -1220,22 +1283,34 @@ function renderPractice() {
     ${item.translation === "ESV" ? `<p class="notice">${ESV_NOTICE}</p>` : ""}
   `;
 
-  $$(".tab").forEach((t) => t.addEventListener("click", () => {
-    session.mode = t.dataset.mode;
-    session.suggested = null;
-    $$(".tab").forEach((x) => x.setAttribute("aria-selected", x === t));
-    renderStage();
-  }));
+  $$(".tab").forEach((t) => t.addEventListener("click", () => setMode(t.dataset.mode)));
   $$(".rate-btn").forEach((b) => b.addEventListener("click", () => rate(Number(b.dataset.r))));
   $("#speak").addEventListener("click", speak);
   renderStage();
 }
 
+function setMode(mode) {
+  stopVoice();
+  session.mode = mode;
+  session.suggested = null;
+  $$(".tab").forEach((x) => x.setAttribute("aria-selected", x.dataset.mode === mode));
+  renderStage();
+}
+
 function renderStage() {
   const stage = $("#stage");
-  const renderers = { recall: stageRecall, fade: stageFade, letters: stageLetters, type: stageType, scramble: stageScramble };
+  const renderers = { recall: stageRecall, fade: stageFade, letters: stageLetters, type: stageType, scramble: stageScramble, say: stageSay, repeat: stageRepeat };
   renderers[session.mode](stage);
   $$(".rate-btn").forEach((b) => b.classList.toggle("suggested", Number(b.dataset.r) === session.suggested));
+
+  // Voice help: read the instructions once per mode (and the reference the first time).
+  const key = `${session.item.id}:${session.mode}`;
+  if (voiceOn() && session.spokenFor !== key) {
+    const intro = session.spokenFor === null ? `${session.item.ref}. ` : "";
+    session.spokenFor = key;
+    const help = $(".mode-help, .recall-cover p", stage);
+    say(intro + (help ? help.textContent : ""));
+  }
 }
 
 // Render the verse, deciding per word whether it's shown, hidden, or partially hidden.
@@ -1330,10 +1405,7 @@ function stageType(stage) {
   ta.addEventListener("input", () => (session.typed = ta.value));
   if (!c) ta.focus();
   $("#check", stage).addEventListener("click", () => {
-    const matched = lcsMatches(target, wordsOf(session.typed));
-    const score = Math.round((matched.size / target.length) * 100);
-    session.checked = { matched, score };
-    session.suggested = score === 100 ? 3 : score >= 90 ? 2 : score >= 70 ? 1 : 0;
+    session.checked = checkWords(session.typed);
     renderStage();
   });
   const retry = $("#retry", stage);
@@ -1385,6 +1457,144 @@ function stageScramble(stage) {
   if (again) again.addEventListener("click", () => { session.scramble = null; session.suggested = null; renderStage(); });
 }
 
+// Scores spoken or typed text against the passage and suggests a rating.
+function checkWords(text) {
+  const target = wordsOf(plainText(session.item));
+  const matched = lcsMatches(target, wordsOf(text));
+  const score = Math.round((matched.size / target.length) * 100);
+  session.suggested = score === 100 ? 3 : score >= 90 ? 2 : score >= 70 ? 1 : 0;
+  return { matched, score };
+}
+
+function stageSay(stage) {
+  if (!canListen()) {
+    stage.innerHTML = `<p class="mode-help">Your browser can't listen to you. Try Chrome or Safari, or use Recall and say it out loud.</p>`;
+    return;
+  }
+  const s = session;
+  const target = wordsOf(plainText(s.item));
+  const c = s.said;
+
+  stage.innerHTML = `
+    <p class="mode-help">Tap the mic and say the passage from memory. Tap again when you're done.</p>
+    <div class="say-bar">
+      <button class="btn btn-primary mic-btn ${s.listening ? "on" : ""}" id="mic">${s.listening ? "⏹ Stop" : c ? "🎤 Say it again" : "🎤 Start"}</button>
+    </div>
+    ${s.listening || s.heard ? `<p class="heard" id="heard" aria-live="polite">${esc(s.heard) || "Listening…"}</p>` : ""}
+    ${c ? `
+      <p class="score">${c.score}% — ${c.matched.size} of ${target.length} words</p>
+      <p class="verse">${verseHtml(() => "show", (i) => (c.matched.has(i) ? "ok" : "miss"))}</p>` : ""}`;
+
+  const finish = () => {
+    if (session !== s || s.mode !== "say") return;
+    s.listening = null;
+    if (!s.heard) toast("I didn't hear anything. Try again.");
+    else {
+      s.said = checkWords(digitsToWords(s.heard));
+      if (voiceOn()) say(`You got ${s.said.matched.size} of ${target.length} words.`);
+    }
+    renderStage();
+  };
+
+  $("#mic", stage).addEventListener("click", () => {
+    if (voice.rec) return voice.rec.stop();
+    speechSynthesis.cancel();
+    s.heard = "";
+    s.said = null;
+    s.suggested = null;
+    const rec = listen({
+      continuous: true,
+      onText: (t) => {
+        s.heard = t;
+        const el = $("#heard");
+        if (el && session === s) el.textContent = t;
+      },
+      onEnd: finish,
+    });
+    if (!rec) return toast("Couldn't start the microphone.");
+    s.listening = rec;
+    renderStage();
+  });
+}
+
+// Breaks the passage into short phrases to hear and repeat: at punctuation, and never much over 7 words.
+function phrasesOf(item) {
+  const phrases = [];
+  versesOf(item).forEach((v, line) => {
+    const pieces = v.text.match(/[^,;:.!?]+(?:[,;:.!?]+["'”’)]*)?/g) || [v.text];
+    pieces.map((p) => p.trim()).filter((p) => /[\p{L}\p{N}]/u.test(p)).forEach((p) => {
+      const words = p.split(/\s+/);
+      const parts = Math.ceil(words.length / 7), size = Math.ceil(words.length / parts);
+      for (let i = 0; i < words.length; i += size) phrases.push({ text: words.slice(i, i + size).join(" "), line });
+    });
+  });
+  return phrases;
+}
+
+const wait = (ms) => new Promise((resolve) => { voice.timer = setTimeout(resolve, ms); });
+
+function playRepeat() {
+  const r = session.repeat;
+  stopVoice();
+  const run = voice.run;
+  r.playing = true;
+  r.done = false;
+  renderStage();
+  (async () => {
+    while (r.index < r.phrases.length) {
+      const text = r.phrases[r.index].text;
+      renderStage();
+      await say(text);
+      if (voice.run !== run) return;
+      await wait(1000 + 450 * text.split(/\s+/).length); // time to say it back
+      if (voice.run !== run) return;
+      r.index++;
+    }
+    r.playing = false;
+    r.done = true;
+    r.index = 0;
+    renderStage();
+    say("Now say the whole thing.");
+  })();
+}
+
+function stageRepeat(stage) {
+  const s = session;
+  if (!s.repeat) s.repeat = { phrases: phrasesOf(s.item), index: 0, playing: false, done: false, hide: false };
+  const r = s.repeat;
+  const lines = versesOf(s.item).map((v, line) => lineHtml(v, r.phrases
+    .map((p, i) => (p.line === line ? `<span class="phrase ${i === r.index && !r.done ? "now" : ""}" data-p="${i}">${esc(p.text)}</span>` : ""))
+    .join(" ")));
+
+  stage.innerHTML = `
+    <p class="mode-help">Listen to each phrase, then say it back in the pause. Tap Play to start.</p>
+    <p class="verse ${r.hide ? "hidden-words" : ""}">${lines.join("")}</p>
+    ${r.done ? `<p class="score">Now say the whole thing.</p>` : ""}
+    <div class="row stage-tools repeat-tools">
+      <button class="btn" id="prev" aria-label="Previous phrase">⏮</button>
+      <button class="btn btn-primary" id="play">${r.playing ? "⏸ Pause" : r.done ? "▶ Again" : "▶ Play"}</button>
+      <button class="btn" id="next" aria-label="Next phrase">⏭</button>
+      <button class="btn btn-ghost" id="hide" aria-pressed="${r.hide}">${r.hide ? "Show words" : "🙈 Hide words"}</button>
+      ${r.done && canListen() ? `<button class="btn" id="trysay">🎤 Try Say it</button>` : ""}
+    </div>`;
+
+  const jump = (i) => {
+    r.index = Math.max(0, Math.min(r.phrases.length - 1, i));
+    r.done = false;
+    if (r.playing) playRepeat(); else renderStage();
+  };
+  $("#play", stage).addEventListener("click", () => {
+    if (r.playing) { stopVoice(); renderStage(); return; }
+    playRepeat();
+  });
+  $("#prev", stage).addEventListener("click", () => jump(r.index - 1));
+  $("#next", stage).addEventListener("click", () => jump(r.index + 1));
+  $("#hide", stage).addEventListener("click", () => { r.hide = !r.hide; renderStage(); });
+  $$("[data-p]", stage).forEach((el) => el.addEventListener("click", () => { r.index = Number(el.dataset.p); playRepeat(); }));
+  const trySay = $("#trysay", stage);
+  if (trySay) trySay.addEventListener("click", () => setMode("say"));
+}
+
 function rate(r) {
   const { item, review, progress } = session;
   recordReview(item, r);
@@ -1414,12 +1624,119 @@ function renderDone(count) {
     </div>`;
 }
 
+/* ---------- Voice ---------- */
+
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const canListen = () => Boolean(Recognition);
+const voiceOn = () => Boolean(state.settings.voiceHelp);
+const applyVoiceClass = () => document.body.classList.toggle("voice-help", voiceOn());
+
+// Speaks `text`; resolves when it ends or is cut off. `queue` adds to what is already being said.
+function say(text, { queue = false } = {}) {
+  if (!("speechSynthesis" in window) || !text) return Promise.resolve();
+  if (!queue) speechSynthesis.cancel();
+  return new Promise((resolve) => {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 0.9;
+    u.onend = u.onerror = resolve;
+    speechSynthesis.speak(u);
+  });
+}
+
+// Starts the microphone. onText(fullTranscript) fires as words arrive; onEnd() when it stops.
+function listen({ continuous = false, onText, onEnd }) {
+  if (!Recognition) return null;
+  if (voice.rec) voice.rec.abort();
+  const rec = new Recognition();
+  rec.lang = "en-US";
+  rec.continuous = continuous;
+  rec.interimResults = true;
+  rec.onresult = (e) => {
+    let text = "";
+    for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
+    onText(squash(text));
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") toast("Allow the microphone to use voice.");
+  };
+  rec.onend = () => {
+    if (voice.rec === rec) voice.rec = null;
+    onEnd();
+  };
+  try { rec.start(); } catch (e) { return null; }
+  voice.rec = rec;
+  return rec;
+}
+
+// Silences everything: speech, the microphone and any Listen & repeat in progress.
+function stopVoice() {
+  voice.run++;
+  clearTimeout(voice.timer);
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  const rec = voice.rec;
+  voice.rec = null;
+  if (rec) { try { rec.abort(); } catch (e) { /* already stopped */ } }
+  if (session) {
+    session.listening = null;
+    if (session.repeat) session.repeat.playing = false;
+  }
+}
+
 function speak() {
   if (!("speechSynthesis" in window)) return toast("Speech isn't supported in this browser.");
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(`${session.item.ref}. ${squash(plainText(session.item))}`);
-  u.rate = 0.9;
-  speechSynthesis.speak(u);
+  stopVoice();
+  if (session.mode === "repeat") renderStage();
+  say(`${session.item.ref}. ${squash(plainText(session.item))}`);
+}
+
+const NUM_UNITS = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(" ");
+const NUM_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split(" ");
+
+// "twenty three" -> "23", "one hundred nineteen" -> "119". Other words pass through.
+function numberWordsToDigits(text) {
+  const out = [];
+  let cur = null;
+  const flush = () => { if (cur !== null) out.push(String(cur)); cur = null; };
+  for (const raw of text.split(/[\s-]+/).filter(Boolean)) {
+    const w = raw.toLowerCase();
+    const u = NUM_UNITS.indexOf(w), t = NUM_TENS.indexOf(w);
+    const value = u >= 0 ? u : t >= 2 ? t * 10 : -1;
+    if (w === "hundred" && cur !== null) { cur *= 100; continue; }
+    if (value < 0) { flush(); out.push(raw); continue; }
+    const joins = cur !== null && ((cur >= 100 && cur % 100 === 0) || (cur >= 20 && cur < 100 && cur % 10 === 0 && value < 10 && value > 0));
+    if (joins) cur += value; else { flush(); cur = value; }
+  }
+  flush();
+  return out.join(" ");
+}
+
+// "40" -> "forty", "23" -> "twenty three": speech-to-text writes digits, verses spell numbers out.
+function digitsToWords(text) {
+  const words = (n) => {
+    if (n < 20) return NUM_UNITS[n];
+    if (n < 100) return NUM_TENS[Math.floor(n / 10)] + (n % 10 ? ` ${NUM_UNITS[n % 10]}` : "");
+    return `${NUM_UNITS[Math.floor(n / 100)]} hundred` + (n % 100 ? ` ${words(n % 100)}` : "");
+  };
+  return text.replace(/\b\d{1,3}\b/g, (d) => words(Number(d)));
+}
+
+// Turns what was said into something REF_ENTRY accepts:
+// "first john three sixteen king james" -> "1 john 3:16 kjv".
+function spokenRef(said) {
+  let s = said.toLowerCase().replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  s = s.replace(/^(first|1st) /, "1 ").replace(/^(second|2nd) /, "2 ").replace(/^(third|3rd) /, "3 ");
+  s = s.replace(/\bking james( version)?\b/, "kjv");
+  s = s.replace(/((?:\b[a-z] ){1,4}[a-z])$/, (m) => m.replace(/ /g, "")); // "n i v" -> "niv"
+  s = numberWordsToDigits(s)
+    .replace(/\bchapter /g, "")
+    .replace(/\bverses? /g, "")
+    .replace(/ (?:through|thru|to|until) /g, "-")
+    .replace(/ ?\bcolon\b ?/g, ":")
+    .replace(/ ?: ?/g, ":");
+  if (/\d:\d/.test(s)) return s;
+  const m = s.match(/^((?:[1-3] )?[a-z ]+?) (\d{1,3})(?: (\d{1,3}(?:-\d{1,3})?))?( .*)?$/);
+  return m ? `${m[1]} ${m[2]}${m[3] ? `:${m[3]}` : ""}${m[4] || ""}` : s;
 }
 
 /* ---------- Keyboard ---------- */
@@ -1428,6 +1745,12 @@ function onKey(e) {
   if (!session || e.metaKey || e.ctrlKey || e.altKey) return;
   if (["TEXTAREA", "INPUT"].includes(document.activeElement.tagName)) return;
   if (e.key >= "1" && e.key <= "4") { rate(Number(e.key) - 1); return; }
+  if (e.key === " " && (session.mode === "say" || session.mode === "repeat") && document.activeElement.tagName !== "BUTTON") {
+    e.preventDefault();
+    const btn = $(session.mode === "say" ? "#mic" : "#play");
+    if (btn) btn.click();
+    return;
+  }
   if (e.key === " " && session.mode === "recall" && !session.shown) {
     e.preventDefault();
     session.shown = true;
@@ -1440,4 +1763,5 @@ function onKey(e) {
   }
 }
 
+applyVoiceClass();
 render();
