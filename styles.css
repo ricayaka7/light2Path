@@ -7,12 +7,12 @@
   --steel-blue: #82a0bc;
 
   /* Light theme tokens */
-  --bg: #e8f0f8;
+  --bg: #d6e1ed;
   --surface: #ffffff;
   --surface-2: #dde9f5;
   --text: #1c2b3d;
   --muted: var(--blue-slate);
-  --border: #c8d9ea;
+  --border: #b5c9de;
   --accent: var(--dusk-blue);
   --accent-ink: #ffffff;
   --cta: var(--cool-sky);

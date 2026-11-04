@@ -1,7 +1,7 @@
 /* Offline support: serve the app shell from cache, refresh it in the background.
  * Bump CACHE when files change so installed copies pick up the update. */
 
-const CACHE = "light2path-v11";
+const CACHE = "light2path-v12";
 const FILES = [
   "./",
   "index.html",
